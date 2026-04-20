@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use hex::ToHex;
-use rand::thread_rng;
-use rsa::{pkcs1::DecodeRsaPrivateKey, pkcs1::EncodeRsaPrivateKey, pkcs8::EncodePublicKey, RsaPrivateKey, RsaPublicKey, Pkcs1v15Sign};
 use sha2::{Digest, Sha256};
 use rfd::FileDialog;
+
+use ring::rand::SystemRandom;
+use ring::signature::{RsaKeyPair, RSA_PKCS1_SHA256};
 
 const PRIV_KEY_PEM: &str = r#"-----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAKCAQEAwHi5gZkIHEWMZy6AwtJbfGCE6WzlLEwzmQhyRchoMK8+/usJ
@@ -37,9 +38,6 @@ y/TwJgu7ppMbUHgVUeaECkD4RtzBRuWms1eNOZ4yUO+h3LDSZN20VZFTCGUgTyx5
 dxq3kn3rtD7ehwOeD1xevQz0Mm5BNamTgKW5zB9u1MEHRrQnKCSN
 -----END RSA PRIVATE KEY-----"#;
 
-// Hinweis: Das ist ein Platzhalter.
-// Wir ersetzen ihn später durch deinen echten 2048-Bit-Key.
-
 fn main() {
     println!("RDP-Sign gestartet");
 
@@ -48,8 +46,8 @@ fn main() {
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let priv_key = ensure_private_key();
-    ensure_publisher_cer(&exe_dir, &priv_key);
+    let priv_key = load_private_key(PRIV_KEY_PEM);
+    ensure_publisher_cer(&exe_dir);
 
     let rdp_path = match get_rdp_path_from_args_or_dialog() {
         Some(p) => p,
@@ -85,15 +83,12 @@ fn main() {
     println!("Signaturblock geschrieben. Fertig.");
 }
 
-fn ensure_private_key() -> RsaPrivateKey {
-    if let Ok(k) = RsaPrivateKey::from_pkcs1_pem(PRIV_KEY_PEM) {
-        return k;
-    }
-    let mut rng = thread_rng();
-    RsaPrivateKey::new(&mut rng, 2048).expect("RSA-Key-Gen fehlgeschlagen")
+fn load_private_key(pem: &str) -> RsaKeyPair {
+    let parsed = pem::parse(pem).expect("PEM parse error");
+    RsaKeyPair::from_der(&parsed.contents).expect("DER parse error")
 }
 
-fn ensure_publisher_cer(dir: &PathBuf, priv_key: &RsaPrivateKey) {
+fn ensure_publisher_cer(dir: &PathBuf) {
     let cer_path = dir.join("publisher.cer");
     if cer_path.exists() {
         println!("publisher.cer gefunden.");
@@ -102,15 +97,11 @@ fn ensure_publisher_cer(dir: &PathBuf, priv_key: &RsaPrivateKey) {
 
     println!("publisher.cer nicht gefunden. Erzeuge...");
 
-    let pub_key = RsaPublicKey::from(priv_key);
-    let der_pub = pub_key.to_public_key_der().expect("PubKey DER").to_vec();
-
     let mut params = rcgen::CertificateParams::new(vec!["RDP-Signature-Local".to_string()]);
     params.alg = &rcgen::PKCS_RSA_SHA256;
     params.is_ca = rcgen::IsCa::NoCa;
-    params.key_usages = vec![
-        rcgen::KeyUsagePurpose::DigitalSignature,
-    ];
+    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+
     let cert = rcgen::Certificate::from_params(params).expect("Cert params");
     let der = cert.serialize_der().expect("Cert der");
 
@@ -122,7 +113,6 @@ fn ensure_publisher_cer(dir: &PathBuf, priv_key: &RsaPrivateKey) {
     println!("publisher.cer wurde erzeugt.");
     println!("Bitte importieren Sie diese Datei in:");
     println!("Zertifikate - Aktueller Benutzer -> Vertrauenswuerdige Personen -> Zertifikate");
-    println!("Danach werden signierte RDP-Dateien ohne Warnung geoeffnet.");
 }
 
 fn get_rdp_path_from_args_or_dialog() -> Option<PathBuf> {
@@ -139,12 +129,14 @@ fn get_rdp_path_from_args_or_dialog() -> Option<PathBuf> {
     Some(file)
 }
 
-fn sign_rdp(content: &str, priv_key: &RsaPrivateKey) -> Result<String, String> {
+fn sign_rdp(content: &str, keypair: &RsaKeyPair) -> Result<String, String> {
     let mut lines: Vec<&str> = content.lines().collect();
 
     lines.retain(|l| {
         let ll = l.trim_start();
-        !(ll.starts_with("signature:s:") || ll.starts_with("signscope:s:") || ll.starts_with("hash:s:"))
+        !(ll.starts_with("signature:s:")
+            || ll.starts_with("signscope:s:")
+            || ll.starts_with("hash:s:"))
     });
 
     let scope_lines: Vec<&str> = lines
@@ -168,9 +160,12 @@ fn sign_rdp(content: &str, priv_key: &RsaPrivateKey) -> Result<String, String> {
 
     println!("Signiere Hash mit RSA-PKCS1...");
 
-    let sig = priv_key
-        .sign(Pkcs1v15Sign::new::<Sha256>(), hash_bytes)
-        .map_err(|e| format!("Signaturfehler: {}", e))?;
+    let rng = SystemRandom::new();
+    let mut sig = vec![0; keypair.public_modulus_len()];
+
+    keypair
+        .sign(&RSA_PKCS1_SHA256, &rng, hash_bytes, &mut sig)
+        .map_err(|e| format!("Sign error: {:?}", e))?;
 
     let sig_b64 = B64.encode(&sig);
     let hash_hex = hash_bytes.encode_hex::<String>();
