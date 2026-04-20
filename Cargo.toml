@@ -1,0 +1,19 @@
+[package]
+name = "rdp-sign"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rsa = "0.9"
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+rcgen = "0.12"
+rfd = "0.14"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
