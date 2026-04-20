@@ -6,6 +6,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use hex::ToHex;
 use sha2::{Digest, Sha256};
 use rfd::FileDialog;
+use pem::parse as pem_parse;
+use rcgen::{Certificate, CertificateParams, PKCS_RSA_SHA256, IsCa, KeyUsagePurpose};
 
 use ring::rand::SystemRandom;
 use ring::signature::{RsaKeyPair, RSA_PKCS1_SHA256};
@@ -46,13 +48,20 @@ fn main() {
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let priv_key = load_private_key(PRIV_KEY_PEM);
+    let keypair = match load_private_key(PRIV_KEY_PEM) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("Fehler beim Laden des Private Key: {}", e);
+            return;
+        }
+    };
+
     ensure_publisher_cer(&exe_dir);
 
     let rdp_path = match get_rdp_path_from_args_or_dialog() {
         Some(p) => p,
         None => {
-            println!("Keine Datei ausgewaehlt. Abbruch.");
+            println!("Keine Datei ausgewählt. Abbruch.");
             return;
         }
     };
@@ -67,7 +76,7 @@ fn main() {
         }
     };
 
-    let signed = match sign_rdp(&content, &priv_key) {
+    let signed = match sign_rdp(&content, &keypair) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Fehler beim Signieren: {}", e);
@@ -83,9 +92,9 @@ fn main() {
     println!("Signaturblock geschrieben. Fertig.");
 }
 
-fn load_private_key(pem: &str) -> RsaKeyPair {
-    let parsed = pem::parse(pem).expect("PEM parse error");
-    RsaKeyPair::from_der(&parsed.contents).expect("DER parse error")
+fn load_private_key(pem_str: &str) -> Result<RsaKeyPair, String> {
+    let pem = pem_parse(pem_str).map_err(|e| format!("PEM parse error: {}", e))?;
+    RsaKeyPair::from_der(&pem.contents).map_err(|e| format!("DER parse error: {:?}", e))
 }
 
 fn ensure_publisher_cer(dir: &PathBuf) {
@@ -97,12 +106,12 @@ fn ensure_publisher_cer(dir: &PathBuf) {
 
     println!("publisher.cer nicht gefunden. Erzeuge...");
 
-    let mut params = rcgen::CertificateParams::new(vec!["RDP-Signature-Local".to_string()]);
-    params.alg = &rcgen::PKCS_RSA_SHA256;
-    params.is_ca = rcgen::IsCa::NoCa;
-    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+    let mut params = CertificateParams::new(vec!["RDP-Signature-Local".to_string()]);
+    params.alg = &PKCS_RSA_SHA256;
+    params.is_ca = IsCa::NoCa;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
 
-    let cert = rcgen::Certificate::from_params(params).expect("Cert params");
+    let cert = Certificate::from_params(params).expect("Cert params");
     let der = cert.serialize_der().expect("Cert der");
 
     if let Err(e) = fs::write(&cer_path, der) {
@@ -112,7 +121,7 @@ fn ensure_publisher_cer(dir: &PathBuf) {
 
     println!("publisher.cer wurde erzeugt.");
     println!("Bitte importieren Sie diese Datei in:");
-    println!("Zertifikate - Aktueller Benutzer -> Vertrauenswuerdige Personen -> Zertifikate");
+    println!("Zertifikate - Aktueller Benutzer -> Vertrauenswürdige Personen -> Zertifikate");
 }
 
 fn get_rdp_path_from_args_or_dialog() -> Option<PathBuf> {
@@ -123,13 +132,14 @@ fn get_rdp_path_from_args_or_dialog() -> Option<PathBuf> {
 
     let file = FileDialog::new()
         .add_filter("RDP-Dateien", &["rdp"])
-        .set_title("RDP-Datei auswaehlen")
+        .set_title("RDP-Datei auswählen")
         .pick_file()?;
 
     Some(file)
 }
 
 fn sign_rdp(content: &str, keypair: &RsaKeyPair) -> Result<String, String> {
+    // Entferne alte Signaturzeilen
     let mut lines: Vec<&str> = content.lines().collect();
 
     lines.retain(|l| {
@@ -139,17 +149,15 @@ fn sign_rdp(content: &str, keypair: &RsaKeyPair) -> Result<String, String> {
             || ll.starts_with("hash:s:"))
     });
 
+    // Scope: alle Zeilen mit ':' (wie vorher)
     let scope_lines: Vec<&str> = lines
         .iter()
         .copied()
         .filter(|l| l.contains(':'))
         .collect();
 
-    let scope_str = {
-        let mut s = scope_lines.join("\n");
-        s.push('\n');
-        s
-    };
+    let mut scope_str = scope_lines.join("\n");
+    scope_str.push('\n');
 
     println!("Scope extrahiert, berechne SHA256...");
 
@@ -158,7 +166,7 @@ fn sign_rdp(content: &str, keypair: &RsaKeyPair) -> Result<String, String> {
     let hash = hasher.finalize();
     let hash_bytes = hash.as_slice();
 
-    println!("Signiere Hash mit RSA-PKCS1...");
+    println!("Signiere Hash mit RSA-PKCS1 SHA256...");
 
     let rng = SystemRandom::new();
     let mut sig = vec![0; keypair.public_modulus_len()];
@@ -170,7 +178,7 @@ fn sign_rdp(content: &str, keypair: &RsaKeyPair) -> Result<String, String> {
     let sig_b64 = B64.encode(&sig);
     let hash_hex = hash_bytes.encode_hex::<String>();
 
-    println!("Fuege Signaturblock hinzu...");
+    println!("Füge Signaturblock hinzu...");
 
     let mut out = lines.iter().map(|s| s.to_string()).collect::<Vec<String>>();
     out.push(format!("signature:s:{}", sig_b64));
