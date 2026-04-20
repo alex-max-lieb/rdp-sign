@@ -94,7 +94,8 @@ fn main() {
 
 fn load_private_key(pem_str: &str) -> Result<RsaKeyPair, String> {
     let pem = pem_parse(pem_str).map_err(|e| format!("PEM parse error: {}", e))?;
-    RsaKeyPair::from_der(&pem.contents).map_err(|e| format!("DER parse error: {:?}", e))
+    // pem.contents() statt Zugriff auf privates Feld
+    RsaKeyPair::from_der(&pem.contents()).map_err(|e| format!("DER parse error: {:?}", e))
 }
 
 fn ensure_publisher_cer(dir: &PathBuf) {
@@ -121,7 +122,7 @@ fn ensure_publisher_cer(dir: &PathBuf) {
 
     println!("publisher.cer wurde erzeugt.");
     println!("Bitte importieren Sie diese Datei in:");
-    println!("Zertifikate - Aktueller Benutzer -> Vertrauenswürdige Personen -> Zertifikate");
+    println!("Zertifikate - Aktueller Benutzer -> Vertrauenswuerdige Personen -> Zertifikate");
 }
 
 fn get_rdp_path_from_args_or_dialog() -> Option<PathBuf> {
@@ -169,7 +170,8 @@ fn sign_rdp(content: &str, keypair: &RsaKeyPair) -> Result<String, String> {
     println!("Signiere Hash mit RSA-PKCS1 SHA256...");
 
     let rng = SystemRandom::new();
-    let mut sig = vec![0; keypair.public_modulus_len()];
+    // neue, nicht-deprecated API: public().modulus_len()
+    let mut sig = vec![0; keypair.public().modulus_len()];
 
     keypair
         .sign(&RSA_PKCS1_SHA256, &rng, hash_bytes, &mut sig)
