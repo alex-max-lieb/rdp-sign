@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rsa = "0.9"
+ring = "0.17"
 rand = "0.8"
 sha2 = "0.10"
 base64 = "0.22"
