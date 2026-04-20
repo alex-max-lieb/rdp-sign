@@ -2,18 +2,22 @@
 name = "rdp-sign"
 version = "0.1.0"
 edition = "2021"
+authors = ["Alexander"]
+description = "RDP signing tool"
+license = "MIT"
 
 [dependencies]
 ring = "0.17"
-rand = "0.8"
-sha2 = "0.10"
-base64 = "0.22"
-hex = "0.4"
+pem = "3.0"
 rcgen = "0.12"
 rfd = "0.14"
+base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"
+# optional, falls du GUI/File dialogs lokal testen willst
+# windows-sys = { version = "0.48", optional = true }
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = true
 codegen-units = 1
-strip = true
